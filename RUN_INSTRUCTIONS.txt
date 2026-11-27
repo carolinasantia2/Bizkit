@@ -1,0 +1,204 @@
+BIZKIT - HOW TO RUN THE PROJECT
+INFO 6205 Program Structure and Algorithms, Fall 2026
+Team: Carolina, Tolu, Vigneshwar
+
+Bizkit has three parts that run together:
+  - database/dist/   the two SQL scripts that create and fill the database
+  - backend/    Java Spring Boot API (the Eclipse project)
+  - frontend/   React app that runs in the browser
+
+Start them in this order: database, backend, frontend.
+Steps that differ between operating systems are marked [Mac] and [Windows].
+
+
+============================================================
+1. INSTALL THE PREREQUISITES
+============================================================
+
+You need:
+  - JDK (current LTS release)
+  - Node.js (LTS release)
+  - Microsoft SQL Server and a SQL client (see "Installing SQL Server" below)
+  - Eclipse IDE for Java Developers (optional; the backend can also run from a terminal)
+
+[Mac]
+  Using Homebrew (https://brew.sh):
+    brew install node
+    brew install --cask temurin
+  Or download the installers:
+    JDK:     https://adoptium.net
+    Node.js: https://nodejs.org
+
+[Windows]
+  Download and run the installers:
+    JDK:     https://adoptium.net   (tick "Set JAVA_HOME variable" during install)
+    Node.js: https://nodejs.org
+
+Installing SQL Server
+
+[Mac]
+  SQL Server runs in Docker (there is no native Mac version).
+  1. Install Docker Desktop: https://www.docker.com/products/docker-desktop/
+     On Apple Silicon: Settings > General > turn on "Use Rosetta for
+     x86_64/amd64 emulation on Apple Silicon", then Apply & Restart.
+  2. Start SQL Server (keep the single quotes around the password):
+       docker run --platform linux/amd64 -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=<YourStrong!Passw0rd>' -p 1433:1433 --name bizkit-sql -v bizkit-sql-data:/var/opt/mssql -d mcr.microsoft.com/mssql/server:2022-latest
+     Next time, start it with:  docker start bizkit-sql
+  3. SQL client: VS Code with the "SQL Server (mssql)" extension, or DBeaver.
+     Connect to server localhost, port 1433, user sa, your password,
+     and tick "Trust server certificate".
+
+[Windows]
+  1. Install SQL Server Developer edition (free) with a default instance.
+     Choose Mixed Mode authentication and set an sa password.
+  2. Open SQL Server Configuration Manager and make sure TCP/IP is
+     enabled for the instance, then restart the SQL Server service.
+  3. SQL client: SQL Server Management Studio (SSMS).
+     Connect to localhost with SQL Server Authentication (user sa)
+     and tick "Trust server certificate".
+
+Check that everything installed (open a NEW terminal window first):
+  java -version
+  node -v
+  npm -v
+
+[Mac]     use the Terminal app
+[Windows] use PowerShell
+
+
+============================================================
+2. SET UP THE DATABASE
+============================================================
+
+Make sure the database server is running, then open your SQL client
+and run the two scripts IN THIS ORDER:
+
+  1. database/dist/01_create_schema.sql
+     Creates the "bizkit" database and every table. It drops existing
+     objects first, so it is safe to run again if anything fails.
+
+  2. database/dist/02_insert_seed_data.sql
+     Loads the menu, tables, staff and the demo checks used in the
+     three scenarios.
+
+How to run a script in each client:
+  VS Code (mssql):  open the file, pick the connection, Execute Query
+  DBeaver:          open the file, use Execute SQL Script (Alt+X)
+  SSMS:             File > Open > File, then Execute (F5)
+
+
+============================================================
+3. CONFIGURE THE DATABASE CONNECTION
+============================================================
+
+The backend reads its database settings from a file named .env
+inside the backend folder. A template is provided.
+
+Copy the template:
+  [Mac]
+    cp backend/.env.example backend/.env
+  [Windows]
+    Copy-Item backend\.env.example backend\.env
+
+Open backend/.env in any text editor and fill in:
+  DB_URL=        jdbc:sqlserver://localhost:1433;databaseName=bizkit;encrypt=true;trustServerCertificate=true
+  DB_USERNAME=   your database user
+  DB_PASSWORD=   that user's password
+
+Then copy the frontend template (no changes needed for a local run):
+  [Mac]
+    cp frontend/.env.example frontend/.env
+  [Windows]
+    Copy-Item frontend\.env.example frontend\.env
+
+
+============================================================
+4. START THE BACKEND
+============================================================
+
+Option A - Eclipse
+  1. File > Import > Maven > Existing Maven Projects
+  2. Browse to the "backend" folder and click Finish
+  3. Wait for Maven to download dependencies (first time only)
+  4. Right-click BizkitApplication.java > Run As > Java Application
+
+Option B - Terminal
+  [Mac]
+    cd backend
+    chmod +x mvnw          (first time only)
+    ./mvnw spring-boot:run
+  [Windows]
+    cd backend
+    .\mvnw.cmd spring-boot:run
+
+The backend is ready when the console shows "Started BizkitApplication".
+It runs at http://localhost:8080. Leave it running.
+
+
+============================================================
+5. START THE FRONTEND
+============================================================
+
+Open a SECOND terminal window (same commands on Mac and Windows):
+  cd frontend
+  npm install            (first time only)
+  npm run dev
+
+Open the address shown in the terminal, usually:
+  http://localhost:5173
+
+
+============================================================
+6. TRY THE THREE DEMO SCENARIOS
+============================================================
+
+Scenario 1 - Take an order (Take Order tab)
+  Pick a table, open Burgers, choose Classic Burger, add Cheese and
+  Bacon and watch the price update. Remove an item, then press Undo.
+
+Scenario 2 - Fix it on the floor (Tables tab)
+  Select the chicken parm and carbonara and move them to course 1.
+  Move items to a table with one check: they merge automatically.
+  Move items to Table 5 (two checks) and choose which check.
+
+Scenario 3 - Close the shift (Close Shift tab)
+  Press Close shift, accept the prompt to carry open tabs over,
+  then sort the report by quantity or revenue.
+
+To reset all demo data, run both SQL scripts again (step 2) and
+restart the backend.
+
+Note: only the two files in database/dist/ need to be run. The other
+folders in database/ are the team's source files that build them.
+
+
+============================================================
+TROUBLESHOOTING
+============================================================
+
+"java" or "node" is not recognized
+  Close and reopen the terminal after installing.
+  [Windows] Check that JAVA_HOME is set: System Properties >
+  Environment Variables.
+
+Backend fails with a database or connection error
+  Check that SQL Server is running and that the values in backend/.env
+  match your user and password.
+  [Mac]     Run "docker ps" and check that bizkit-sql is listed;
+            if not, run "docker start bizkit-sql".
+  [Windows] Check that TCP/IP is enabled and that Mixed Mode
+            (SQL Server Authentication) was chosen during install.
+
+Re-running 01_create_schema.sql fails because the database is in use
+  Stop the backend first, then run the script again.
+
+"Port 8080 is already in use"
+  Stop the other program using that port, or stop an earlier copy of
+  the backend that is still running.
+
+The page loads but shows no data
+  Make sure the backend is still running and that frontend/.env has
+  VITE_API_BASE_URL=http://localhost:8080/api
+
+[Mac] "permission denied: ./mvnw"
+  Run: chmod +x mvnw

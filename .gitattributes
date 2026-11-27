@@ -1,0 +1,8 @@
+# Let Git normalize line endings for text files
+* text=auto
+
+# Shell scripts must keep Unix line endings, or bash fails on Windows checkouts
+*.sh text eol=lf
+
+# Windows batch files keep Windows line endings
+*.cmd text eol=crlf
