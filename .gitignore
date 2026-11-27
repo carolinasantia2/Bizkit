@@ -1,0 +1,44 @@
+# ── Dependencies and build output ──
+node_modules/
+frontend/dist/
+backend/target/
+*.class
+
+# ── Environment files (real credentials) ──
+.env
+.env.*
+!.env.example
+
+# ── Eclipse ──
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+bin/
+.metadata/
+
+# ── IntelliJ, in case a teammate uses it ──
+.idea/
+*.iml
+
+# ── VS Code (keep shared extension recommendations) ──
+.vscode/*
+!.vscode/extensions.json
+
+# ── Logs and crash files ──
+*.log
+npm-debug.log*
+logs/
+hs_err_pid*
+
+# ── Test coverage ──
+coverage/
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Database backups ──
+*.bak
