@@ -1,22 +1,22 @@
-*                                             @carolina-gh @tolu-gh @vigneshwar-gh
+*                                             @carolinasantia2 @NEU-ToluVictor @vigneshwar-gh
 
-/backend/src/main/java/com/bizkit/adt/tree/   @carolina-gh @tolu-gh
-/backend/src/main/java/com/bizkit/menu/       @carolina-gh @tolu-gh
-/backend/src/main/java/com/bizkit/order/      @carolina-gh @tolu-gh
-/frontend/src/features/order/                 @carolina-gh @tolu-gh
-/database/src/tables/01_foundation/           @carolina-gh @tolu-gh
-/database/src/tables/02_menu/                 @carolina-gh @tolu-gh
+/backend/src/main/java/com/bizkit/adt/tree/   @carolinasantia2 @NEU-ToluVictor
+/backend/src/main/java/com/bizkit/menu/       @carolinasantia2 @NEU-ToluVictor
+/backend/src/main/java/com/bizkit/order/      @carolinasantia2 @NEU-ToluVictor
+/frontend/src/features/order/                 @carolinasantia2 @NEU-ToluVictor
+/database/src/tables/01_foundation/           @carolinasantia2 @NEU-ToluVictor
+/database/src/tables/02_menu/                 @carolinasantia2 @NEU-ToluVictor
 
-/backend/src/main/java/com/bizkit/adt/list/   @tolu-gh @vigneshwar-gh
-/backend/src/main/java/com/bizkit/floor/      @tolu-gh @vigneshwar-gh
-/frontend/src/features/floor/                 @tolu-gh @vigneshwar-gh
-/database/src/tables/03_checks_orders/        @tolu-gh @vigneshwar-gh
-/database/src/tables/04_floor_operations/     @tolu-gh @vigneshwar-gh
+/backend/src/main/java/com/bizkit/adt/list/   @NEU-ToluVictor @vigneshwar-gh
+/backend/src/main/java/com/bizkit/floor/      @NEU-ToluVictor @vigneshwar-gh
+/frontend/src/features/floor/                 @NEU-ToluVictor @vigneshwar-gh
+/database/src/tables/03_checks_orders/        @NEU-ToluVictor @vigneshwar-gh
+/database/src/tables/04_floor_operations/     @NEU-ToluVictor @vigneshwar-gh
 
-/backend/src/main/java/com/bizkit/adt/stack/  @vigneshwar-gh @carolina-gh
-/backend/src/main/java/com/bizkit/shift/      @vigneshwar-gh @carolina-gh
-/backend/src/main/java/com/bizkit/undo/       @vigneshwar-gh @carolina-gh
-/backend/src/main/java/com/bizkit/sorting/    @vigneshwar-gh @carolina-gh
-/frontend/src/features/shift/                 @vigneshwar-gh @carolina-gh
-/database/src/tables/05_payments/             @vigneshwar-gh @carolina-gh
-/database/src/tables/06_shift_close/          @vigneshwar-gh @carolina-gh
+/backend/src/main/java/com/bizkit/adt/stack/  @vigneshwar-gh @carolinasantia2
+/backend/src/main/java/com/bizkit/shift/      @vigneshwar-gh @carolinasantia2
+/backend/src/main/java/com/bizkit/undo/       @vigneshwar-gh @carolinasantia2
+/backend/src/main/java/com/bizkit/sorting/    @vigneshwar-gh @carolinasantia2
+/frontend/src/features/shift/                 @vigneshwar-gh @carolinasantia2
+/database/src/tables/05_payments/             @vigneshwar-gh @carolinasantia2
+/database/src/tables/06_shift_close/          @vigneshwar-gh @carolinasantia2
