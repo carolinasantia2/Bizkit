@@ -41,7 +41,9 @@
 **Shared files**
 - [ ] If I changed a shared file (`pom.xml`, `package.json`, `App.jsx`, `BizkitApplication.java`, `common/`, SQL scripts), I kept the change small and posted in the group chat
 - [ ] If I added or changed an endpoint, I updated `docs/api.md` in this pull request
-- [ ] If I changed the schema, `01_create_schema.sql` still runs cleanly twice in a row and `02_insert_seed_data.sql` still loads
+- [ ] If I added a table, I also added it to the `TABLES` list in `build_dist.sh` and to `pre-deployment/drop_all_objects.sql` (children first); new seed files are in the `SEEDS` list
+- [ ] If I changed `database/src` or seeds, I ran `build_dist.sh` locally, the schema script ran cleanly twice in a row, the seed script loaded, and the `tests/` queries passed
+- [ ] I did **not** commit changes to `database/dist/` (it is rebuilt on `main` after merging)
 
 **Safety**
 - [ ] No `.env` files, passwords or personal data are committed
