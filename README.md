@@ -119,8 +119,8 @@ bizkit/
 │   │   └── indexes/            IX_ files (only if needed)
 │   ├── scripts/
 │   │   ├── build_dist.sh       assembles dist/ from src/ and scripts/
-│   │   ├── pre-deployment/     create database, drop all objects (children first)
-│   │   └── post-deployment/    seed INSERTs, one file per domain
+│   │   ├── pre-deployment/     drop_all_objects.sql (children first)
+│   │   └── post-deployment/    seed INSERTs, one file per domain (foundation_data.sql …)
 │   ├── tests/                  read-only checks to run after building
 │   └── dist/                   THE GRADED FILES. Generated; don't edit.
 │       ├── 01_create_schema.sql
@@ -326,12 +326,25 @@ The database source is split into one file per table so everyone can build and t
 | `05_payments/` | PAYMENT, CARD_PAYMENT, CASH_PAYMENT |
 | `06_shift_close/` | SHIFT_CARRYOVER |
 
-Name files with a number and the table name, for example `01_foundation/02_dining_table.sql`, so they sort into dependency order.
+Name each file after its table in PascalCase, for example `01_foundation/DiningTable.sql`. The build order isn't taken from file names: it's the `TABLES` and `SEEDS` lists at the top of `scripts/build_dist.sh`.
+
+**Dependency levels.** A table is created after every table it points to, and dropped after every table that points to it. The `TABLES` list in `build_dist.sh` follows these levels from top to bottom; `drop_all_objects.sql` drops in the reverse order.
+
+| Level | Tables | Points to |
+| --- | --- | --- |
+| 1 | SERVICE_AREA, COURSE, EMPLOYEE | nothing |
+| 2 | DINING_TABLE, SERVER, MANAGER, SHIFT, MENU_ENTRY | level 1 (MENU_ENTRY also points to itself) |
+| 3 | CATEGORY, MENU_ITEM, ADD_ON | MENU_ENTRY, COURSE |
+| 4 | GUEST_CHECK | DINING_TABLE, SERVER, SHIFT |
+| 5 | ORDER_ITEM, PAYMENT, SHIFT_CARRYOVER | GUEST_CHECK and below |
+| 6 | ORDER_ITEM_ADD_ON, ITEM_TRANSFER, CARD_PAYMENT, CASH_PAYMENT | level 5 and below |
 
 **What the build produces.**
 
-- `dist/01_create_schema.sql` = `pre-deployment/` (DROP IF EXISTS for every object, children first, then CREATE DATABASE) + every file in `src/tables/` in order + `src/programmability/` + `src/indexes/`
-- `dist/02_insert_seed_data.sql` = every file in `scripts/post-deployment/` in order
+- `dist/01_create_schema.sql` = CREATE DATABASE `bizkit` if it doesn't exist + `drop_all_objects.sql` (children first) + every file in `TABLES`, in list order + every file in `OBJECTS` (indexes, triggers, views)
+- `dist/02_insert_seed_data.sql` = a guard that refuses to run if the tables already hold data + every file in `SEEDS`, in list order
+
+The build stops without writing anything if a listed file is missing.
 
 **Run the build:**
 
@@ -344,16 +357,16 @@ Then run both files in `dist/` against your local server and run the queries in 
 
 **Rules.**
 
-- Adding a table means adding its file in your domain folder **and** a line in `pre-deployment/drop_all_objects.sql`, in children-first order.
+- Adding a table means three things: its file in your domain folder, its path in the `TABLES` list in `build_dist.sh` (at its dependency level), and its `DROP` in `pre-deployment/drop_all_objects.sql` (children first). Your table and seed lines are already in the lists, commented out: uncomment them.
 - Feature pull requests change `src/` and `scripts/` only. **Never edit `dist/` by hand.** After merging to `main`, rebuild `dist/` and commit it on its own ("Rebuild dist").
 - Report sorting and category totals stay in the Java ADTs. Don't move them into views or stored procedures.
-- **SQL Server specifics:** the build script puts `GO` between files, because `CREATE TRIGGER` and `CREATE VIEW` must each start their own batch. Before `DROP DATABASE`, the pre-deployment script sets the database to single-user mode so open connections (such as a running backend) don't block the drop.
+- **SQL Server specifics:** the build script puts `GO` between files, because `CREATE TRIGGER` and `CREATE VIEW` must each start their own batch. The seed script must run on freshly created tables; to reload data, run both scripts again in order.
 
 ## Contributing
 
 - **Branches:** work on a feature branch named after your part, for example `feature/menu-tree`, `feature/floor` or `feature/shift`.
 - **Pull requests:** `main` is protected. Open a pull request when your change builds and its tests pass; CODEOWNERS requests a review from the folder's owner.
-- **Shared files:** `pom.xml`, `package.json`, `App.jsx`, `BizkitApplication.java`, `common/`, `database/scripts/pre-deployment/` and `docs/api.md` belong to everyone. Change them in small, separate pull requests and mention it in the group chat.
+- **Shared files:** `pom.xml`, `package.json`, `App.jsx`, `BizkitApplication.java`, `common/`, `database/scripts/build_dist.sh`, `database/scripts/pre-deployment/` and `docs/api.md` belong to everyone. Change them in small, separate pull requests and mention it in the group chat.
 - **API changes:** update `docs/api.md` in the same pull request as the endpoint change.
 - **Data structures:** code in `adt/` must not import `java.util` collections.
 
