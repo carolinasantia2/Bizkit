@@ -16,13 +16,17 @@ These apply to every endpoint unless the endpoint says otherwise.
 | Paths | Plural nouns, lowercase, hyphens for multi-word actions: `/checks/{checkId}/items/move-course` |
 | JSON fields | camelCase: `orderItemId`, `tableNumber` |
 | IDs | Integers, matching the primary keys in the ERD |
-| Money | **Integer cents**, and the field name ends in `Cents`: `1350` = $13.50 (`unitPriceCents`, `totalCents`). The frontend only formats it for display. |
+| Money | **Integer cents**, and the field name ends in `Cents`: `1350` = $13.50 (`unitPriceCents`, `totalCents`). The frontend only formats it for display. Java code also uses `int` cents; repositories convert to and from `DECIMAL(8,2)`. |
 | Dates and times | ISO 8601 strings: `"2026-12-02T18:30:00"` |
 | Status values | Uppercase words, never the single letters stored in the database: `"OPEN"`, `"PAID"`, `"CLOSED"`, `"HELD"`, `"SENT"` |
+| Lists | `GET` endpoints that return a list return a plain JSON array, not an object around it |
 | Empty lists | Always `[]`, never `null` |
 | Optional fields | Present with `null` when there is no value |
 | Who computes | The backend computes all prices, totals, sorting and grouping (that's where our ADTs and algorithms live). The frontend never sums or sorts data itself. |
 | Changes | Any request that changes data returns the `ChangeResult` shape (section 2) so the frontend can redraw without another request. |
+| Part-paid checks | Once a check has **any** payment (`paidCents` > 0), actions that take items off it are blocked with `CHECK_HAS_PAYMENT`: moving items to another course or table, splitting, removing an item, and Undo. Adding items, sending to the kitchen and merging items into it are allowed, because they only raise the balance. |
+| Display rules | The frontend never offers an action that will fail. It disables blocked actions using data it already has (`status`, `paidCents`, item `status`, `undo.blocked`) and shows the reason next to the control. Error responses are a safety net, not how the user learns about a rule. See section 6 for the exact wording. |
+| Who made the change | The app has no login. Actions on a check (moves, splits, payments) are recorded under the check's server. Actions with no check (opening a check, closing the shift) send the `employeeId` of the person shown in the top bar. |
 
 ### Errors
 
@@ -51,12 +55,19 @@ Every error uses the same body:
 | `VALIDATION_FAILED` | 400 | A field is missing or invalid |
 | `TABLE_NOT_FOUND` | 404 | |
 | `CHECK_NOT_FOUND` | 404 | |
-| `ITEM_NOT_FOUND` | 404 | |
-| `MENU_ENTRY_NOT_FOUND` | 404 | |
-| `CHECK_ALREADY_PAID` | 409 | |
-| `NOTHING_TO_UNDO` | 409 | The undo stack is empty |
-| `SHIFT_ALREADY_CLOSED` | 409 | |
+| `ITEM_NOT_FOUND` | 404 | An order item doesn't exist |
+| `MENU_ENTRY_NOT_FOUND` | 404 | A menu entry (category, item or add-on) doesn't exist |
+| `EMPLOYEE_NOT_FOUND` | 404 | |
+| `SHIFT_NOT_FOUND` | 404 | |
+| `CHECK_ALREADY_PAID` | 409 | The check is fully paid |
+| `CHECK_HAS_PAYMENT` | 409 | The check has at least one payment (fully or partly paid), so items can't be taken off it. Adding and sending items is still allowed |
 | `CHECK_CLOSED` | 409 | The check was emptied by a move and closed, so it can't be changed |
+| `ITEM_UNAVAILABLE` | 409 | The menu item is marked unavailable (sold out) |
+| `ITEM_ALREADY_SENT` | 409 | The item was already sent to the kitchen, so it can't be removed |
+| `NOTHING_TO_UNDO` | 409 | The undo stack is empty |
+| `UNDO_NOT_POSSIBLE` | 409 | The last action can no longer be reversed (for example, undoing "Opened Check 2" after items were added). The entry is discarded |
+| `OPEN_CHECKS_REMAIN` | 409 | The shift has open checks and the request didn't ask to carry them over |
+| `SHIFT_ALREADY_CLOSED` | 409 | |
 
 ---
 
@@ -77,6 +88,8 @@ Screens reuse these shapes. **Never return a different version of the same thing
 | `status` | string | `OPEN`, `PAID`, `CLOSED` |
 | `courses` | Course[] | Always all courses, in course order, even if empty |
 | `totalCents` | int | Computed by the backend |
+| `paidCents` | int | Sum of payments on the check, without tips. `0` when unpaid |
+| `balanceCents` | int | `totalCents − paidCents`. What the pay panel shows as due |
 | `openedAt` | string | ISO 8601 |
 
 ### Course (inside a Check)
@@ -139,8 +152,10 @@ Recursive: the whole menu tree arrives in one response.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `canUndo` | boolean | |
+| `canUndo` | boolean | `true` only if pressing Undo will succeed |
 | `label` | string or null | Shown on the top-bar button, e.g. `"Merged 2 items"` |
+| `blocked` | boolean | `true` when there is an entry on top but it can't be undone (it touches a check with a payment, or can no longer be reversed) |
+| `blockedReason` | string or null | Shown on the disabled button, e.g. `"Can't undo: Table 5 has a payment"` |
 
 ### ChangeResult
 
@@ -149,7 +164,7 @@ Returned by every endpoint that changes data.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `checks` | Check[] | Every check the change touched, in its new state |
-| `removedCheckIds` | int[] | Checks that no longer exist (emptied by a move) |
+| `removedCheckIds` | int[] | Checks the change closed (emptied by a move, or a split check undone). They are `CLOSED`, not deleted, and leave the table's list |
 | `undo` | UndoState | The top-bar button after the change |
 | `message` | string | Snackbar text, e.g. `"Merged 2 items into Table 4's check"` |
 
@@ -168,30 +183,31 @@ Returned by every endpoint that changes data.
 
 | Method | Path | Owner | Screen | Status |
 | --- | --- | --- | --- | --- |
-| GET | `/menu` | Carolina | Take Order | Draft |
-| GET | `/menu/items/{entryId}/price` | Carolina | Take Order | Draft |
-| POST | `/checks` | Carolina | Take Order | Draft |
-| POST | `/checks/{checkId}/items` | Carolina | Take Order | Draft |
-| DELETE | `/checks/{checkId}/items/{orderItemId}` | Carolina | Take Order | Draft |
-| POST | `/checks/{checkId}/send` | Carolina | Take Order | Draft |
-| GET | `/tables` | Tolu | Tables | Draft |
-| GET | `/tables/{tableId}/checks` | Tolu | Tables, Take Order | Draft |
-| POST | `/checks/{checkId}/items/move-course` | Tolu | Tables | Draft |
-| POST | `/items/move-table` | Tolu | Tables | Draft |
-| POST | `/checks/{checkId}/split` | Tolu | Tables | Draft |
-| POST | `/checks/{checkId}/payments` | Tolu | Tables | Draft |
-| GET | `/undo` | Vigneshwar | All (top bar) | Draft |
-| POST | `/undo` | Vigneshwar | All (top bar) | Draft |
-| GET | `/shifts/current/summary` | Vigneshwar | Close Shift | Draft |
-| POST | `/shifts/current/close` | Vigneshwar | Close Shift | Draft |
-| GET | `/shifts/{shiftId}/report` | Vigneshwar | Close Shift | Draft |
-| GET | `/shifts/{shiftId}/sort-timing` | Vigneshwar | Close Shift | Draft |
+| GET | `/menu` | Carolina | Take Order | Agreed |
+| GET | `/menu/items/{entryId}/price` | Carolina | Take Order | Agreed |
+| POST | `/checks` | Carolina | Take Order | Agreed |
+| POST | `/checks/{checkId}/items` | Carolina | Take Order | Agreed |
+| DELETE | `/checks/{checkId}/items/{orderItemId}` | Carolina | Take Order | Agreed |
+| POST | `/checks/{checkId}/send` | Carolina | Take Order | Agreed |
+| GET | `/tables` | Tolu | Tables | Agreed |
+| GET | `/tables/{tableId}/checks` | Tolu | Tables, Take Order | Agreed |
+| POST | `/checks/{checkId}/items/move-course` | Tolu | Tables | Agreed |
+| POST | `/items/move-table` | Tolu | Tables | Agreed |
+| POST | `/checks/{checkId}/split` | Tolu | Tables | Agreed |
+| POST | `/checks/{checkId}/payments` | Tolu | Tables | Agreed |
+| GET | `/undo` | Vigneshwar | All (top bar) | Draft (Vigneshwar to review) |
+| POST | `/undo` | Vigneshwar | All (top bar) | Draft (Vigneshwar to review) |
+| POST | `/undo/skip` | Vigneshwar | All (top bar) | Draft (Vigneshwar to review) |
+| GET | `/shifts/current/summary` | Vigneshwar | Close Shift | Draft (Vigneshwar to review) |
+| POST | `/shifts/current/close` | Vigneshwar | Close Shift | Draft (Vigneshwar to review) |
+| GET | `/shifts/{shiftId}/report` | Vigneshwar | Close Shift | Draft (Vigneshwar to review) |
+| GET | `/shifts/{shiftId}/sort-timing` | Vigneshwar | Close Shift | Draft (Vigneshwar to review) |
 
 ---
 
 ## 4. Endpoints
 
-Copy this template for each endpoint and fill in every part. Delete nothing; write "None" where a part doesn't apply.
+Copy this template for each new endpoint and fill in every part. Delete nothing; write "None" where a part doesn't apply.
 
 ```markdown
 ### METHOD /path
@@ -223,11 +239,124 @@ What it does, in one sentence.
 (Behaviour the frontend relies on, edge cases, which ADT or algorithm runs here)
 ```
 
-### Reference example: POST /items/move-table
+---
 
-**Owner:** Tolu · **Called by:** Tables · **Status:** Draft
+<!-- Menu and order endpoints (Carolina). -->
 
-Moves selected items to another table, following the auto-merge rules.
+### GET /menu
+
+**Owner:** Carolina · **Called by:** Take Order · **Status:** Agreed
+
+Returns the whole menu as one tree, for the menu browser.
+
+**Path / query parameters**
+
+None
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+The root MenuNode. Its children are the top-level menus (Food, Drinks), then groups, items and add-ons.
+
+```json
+{
+  "entryId": 1, "name": "Menu", "type": "CATEGORY", "priceCents": null,
+  "defaultCourseId": null, "isAvailable": true,
+  "children": [
+    {
+      "entryId": 2, "name": "Food", "type": "CATEGORY", "priceCents": null,
+      "defaultCourseId": null, "isAvailable": true,
+      "children": [
+        {
+          "entryId": 11, "name": "Burgers", "type": "CATEGORY", "priceCents": null,
+          "defaultCourseId": null, "isAvailable": true,
+          "children": [
+            {
+              "entryId": 40, "name": "Classic Burger", "type": "ITEM", "priceCents": 1200,
+              "defaultCourseId": 2, "isAvailable": true,
+              "children": [
+                { "entryId": 41, "name": "Cheese", "type": "ADD_ON", "priceCents": 150, "defaultCourseId": null, "isAvailable": true, "children": [] },
+                { "entryId": 42, "name": "Bacon", "type": "ADD_ON", "priceCents": 200, "defaultCourseId": null, "isAvailable": true, "children": [] },
+                { "entryId": 43, "name": "Avocado", "type": "ADD_ON", "priceCents": 250, "defaultCourseId": null, "isAvailable": true, "children": [] }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 500 | | Unexpected failure only; this endpoint has no expected errors |
+
+**Rules and notes**
+
+- Built by a recursive walk of the MenuTree from the root, visiting children in `displayOrder`.
+- Unavailable items are included with `isAvailable: false`, so the frontend can grey them out instead of hiding them.
+- The menu is loaded into the MenuTree once at startup; this endpoint doesn't query the database.
+
+---
+
+### GET /menu/items/{entryId}/price
+
+**Owner:** Carolina · **Called by:** Take Order · **Status:** Agreed
+
+Returns the price of one item with the chosen add-ons, for the live price in the modifier panel.
+
+**Path / query parameters**
+
+| Name | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `entryId` | int | Yes | Must be an `ITEM` |
+| `addOnIds` | int list | No | Comma-separated, e.g. `?addOnIds=41,42`. Omit for no add-ons |
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+```json
+{
+  "entryId": 40,
+  "name": "Classic Burger",
+  "basePriceCents": 1200,
+  "addOns": [
+    { "addOnId": 41, "name": "Cheese", "priceCents": 150 },
+    { "addOnId": 42, "name": "Bacon", "priceCents": 200 }
+  ],
+  "unitPriceCents": 1550
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | `entryId` isn't an item, or an add-on in `addOnIds` doesn't belong to this item |
+| 404 | `MENU_ENTRY_NOT_FOUND` | `entryId` or an add-on ID doesn't exist |
+
+**Rules and notes**
+
+- `unitPriceCents` comes from `MenuTreeInterface.priceWithAddOns`, which adds the item's price to the price of each chosen add-on recursively.
+- Repeating an add-on ID counts it once.
+- This endpoint only calculates; it changes nothing.
+
+---
+
+### POST /checks
+
+**Owner:** Carolina · **Called by:** Take Order · **Status:** Agreed
+
+Opens a new, empty check on a table.
 
 **Path / query parameters**
 
@@ -237,59 +366,212 @@ None
 
 ```json
 {
-  "orderItemIds": [12, 13],
-  "targetTableId": 5,
-  "targetCheckId": null
+  "tableId": 2,
+  "serverId": 3,
+  "guestCount": 2
 }
 ```
 
-`targetCheckId` is `null` on the first call. It's set only when the user picks a check in the "several checks" dialog, or `-1` for "a new separate check".
+| Field | Notes |
+| --- | --- |
+| `serverId` | The employee shown in the top bar; must be a SERVER |
+| `guestCount` | 1 or more |
 
 **Success response** – `200 OK`
 
-ChangeResult plus two fields:
+ChangeResult with the new check: status `OPEN`, every course present and empty, `totalCents: 0`.
 
 ```json
 {
-  "result": "MERGED",
-  "options": [],
-  "checks": [ { "checkId": 7, "tableNumber": 4, "...": "Check shape" } ],
+  "checks": [ { "checkId": 15, "tableNumber": 2, "checkLabel": "Check 2", "status": "OPEN", "totalCents": 0, "...": "Check shape" } ],
   "removedCheckIds": [],
-  "undo": { "canUndo": true, "label": "Merged 2 items" },
-  "message": "Merged 2 items into Table 4's check"
+  "undo": { "canUndo": true, "label": "Opened Check 2" },
+  "message": "Opened Check 2 on Table 2"
 }
 ```
-
-| `result` | Meaning |
-| --- | --- |
-| `NEW_CHECK` | Target table had no checks; the items became a new check there |
-| `MERGED` | Target had one check (or the user chose one); items merged into it |
-| `CHOOSE_CHECK` | Target has several checks and no `targetCheckId` was sent. **Nothing moved.** `options` lists the candidate checks; the frontend shows the dialog (wireframe 2.4) and calls again with the chosen `targetCheckId`. |
 
 **Errors**
 
 | Status | Code | When |
 | --- | --- | --- |
-| 400 | `VALIDATION_FAILED` | `orderItemIds` is empty, or the target is the items' current table |
-| 404 | `TABLE_NOT_FOUND` | `targetTableId` doesn't exist |
-| 404 | `ITEM_NOT_FOUND` | Any ID in `orderItemIds` doesn't exist |
+| 400 | `VALIDATION_FAILED` | `guestCount` is less than 1, or `serverId` isn't a server |
+| 404 | `TABLE_NOT_FOUND` | `tableId` doesn't exist |
+| 404 | `EMPLOYEE_NOT_FOUND` | `serverId` doesn't exist |
 
 **Rules and notes**
 
-- Moved items keep their course.
-- A source check left empty is removed and its ID returned in `removedCheckIds`.
-- The whole move is one Undo entry, pushed to the Stack ADT.
-- Items are removed from the source List from the highest position down, so positions don't shift.
+- The check is added to the end of the table's List of checks and recorded in the current shift.
+- One Undo entry. Undo closes the check, but only if it's still empty; otherwise Undo refuses with `UNDO_NOT_POSSIBLE` and discards the entry.
 
 ---
 
-<!-- Add the remaining endpoints below, in the order of the index. -->
+### POST /checks/{checkId}/items
 
-<!-- Floor endpoints (Tolu). The menu and order endpoints go above this block. -->
+**Owner:** Carolina · **Called by:** Take Order · **Status:** Agreed
+
+Adds a menu item, with add-ons, to a course on a check.
+
+**Path / query parameters**
+
+| Name | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `checkId` | int | Yes | |
+
+**Request body**
+
+```json
+{
+  "menuItemId": 40,
+  "addOnIds": [41, 42],
+  "courseId": 2,
+  "quantity": 1,
+  "specialRequest": null
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `addOnIds` | `[]` for none |
+| `courseId` | Optional. If `null`, the item's default course is used; if the item has none (drinks), course 1 |
+| `quantity` | 1 or more |
+
+**Success response** – `200 OK`
+
+ChangeResult with the updated check.
+
+```json
+{
+  "checks": [ { "checkId": 3, "tableNumber": 2, "totalCents": 6550, "...": "Check shape with the burger at the end of Mains" } ],
+  "removedCheckIds": [],
+  "undo": { "canUndo": true, "label": "Added Classic Burger" },
+  "message": "Added Classic Burger to Table 2"
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | `menuItemId` isn't an item, an add-on doesn't belong to it, `courseId` doesn't exist, or `quantity` is less than 1 |
+| 404 | `CHECK_NOT_FOUND` | `checkId` doesn't exist |
+| 404 | `MENU_ENTRY_NOT_FOUND` | `menuItemId` or an add-on ID doesn't exist |
+| 409 | `ITEM_UNAVAILABLE` | The item is sold out |
+| 409 | `CHECK_ALREADY_PAID` | The check is paid |
+| 409 | `CHECK_CLOSED` | The check is closed |
+
+**Rules and notes**
+
+- `unitPriceCents` is calculated by `priceWithAddOns` and stored on the order line, so later menu price changes don't affect it.
+- The item is added to the end of its course's List with status `HELD`.
+- One Undo entry. Undo removes the item from the position it was added at.
+
+---
+
+### DELETE /checks/{checkId}/items/{orderItemId}
+
+**Owner:** Carolina · **Called by:** Take Order · **Status:** Agreed
+
+Removes an item that hasn't been sent to the kitchen yet.
+
+**Path / query parameters**
+
+| Name | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `checkId` | int | Yes | |
+| `orderItemId` | int | Yes | Must be on this check |
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+ChangeResult with the updated check.
+
+```json
+{
+  "checks": [ { "checkId": 3, "tableNumber": 2, "...": "Check shape without the item" } ],
+  "removedCheckIds": [],
+  "undo": { "canUndo": true, "label": "Removed Fries" },
+  "message": "Removed Fries from Table 2"
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 404 | `CHECK_NOT_FOUND` | `checkId` doesn't exist |
+| 404 | `ITEM_NOT_FOUND` | `orderItemId` doesn't exist or isn't on this check |
+| 409 | `ITEM_ALREADY_SENT` | The item's status is `SENT` |
+| 409 | `CHECK_HAS_PAYMENT` | The check has a payment, so removing an item would leave it overpaid |
+| 409 | `CHECK_ALREADY_PAID` | The check is paid |
+| 409 | `CHECK_CLOSED` | The check is closed |
+
+**Rules and notes**
+
+- Only `HELD` items can be removed. Removing a sent item is a void, which needs a manager in a real restaurant and is out of scope.
+- A check left with no items stays `OPEN`. Unlike a move, the server is still building the order.
+- One Undo entry, which keeps the removed item's full data. Undo re-inserts it at its original position in its original course.
+
+---
+
+### POST /checks/{checkId}/send
+
+**Owner:** Carolina · **Called by:** Take Order · **Status:** Agreed
+
+Sends held items to the kitchen.
+
+**Path / query parameters**
+
+| Name | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `checkId` | int | Yes | |
+
+**Request body**
+
+```json
+{
+  "courseIds": [1]
+}
+```
+
+`courseIds` is optional. `null` or omitted sends every held item on the check.
+
+**Success response** – `200 OK`
+
+ChangeResult with the updated check.
+
+```json
+{
+  "checks": [ { "checkId": 3, "tableNumber": 2, "...": "Check shape, course 1 items now SENT" } ],
+  "removedCheckIds": [],
+  "undo": { "canUndo": true, "label": "Removed Fries" },
+  "message": "Sent 1 item to the kitchen"
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | No held items in the chosen courses, or a `courseId` doesn't exist |
+| 404 | `CHECK_NOT_FOUND` | `checkId` doesn't exist |
+| 409 | `CHECK_ALREADY_PAID` | The check is paid |
+| 409 | `CHECK_CLOSED` | The check is closed |
+
+**Rules and notes**
+
+- Changes item status from `HELD` to `SENT`; nothing moves.
+- Not undoable, because the kitchen has already received the ticket. `undo` is returned unchanged.
+
+---
+
+<!-- Floor endpoints (Tolu). -->
 
 ### GET /tables
 
-**Owner:** Tolu · **Called by:** Tables · **Status:** Draft
+**Owner:** Tolu · **Called by:** Tables · **Status:** Agreed
 
 Returns every dining table with its open-check count and open total, for the table grid.
 
@@ -330,7 +612,7 @@ An array of TableSummary, in table-number order.
 
 ### GET /tables/{tableId}/checks
 
-**Owner:** Tolu · **Called by:** Tables, Take Order · **Status:** Draft
+**Owner:** Tolu · **Called by:** Tables, Take Order · **Status:** Agreed
 
 Returns the open checks on one table, with all their courses and items.
 
@@ -403,13 +685,13 @@ An array of Check, in `checkLabel` order. Empty array if the table has no open c
 - Only `OPEN` checks are returned.
 - `checkLabel` comes from the check's position in the table's List: the first open check is `"Check 1"`, the second `"Check 2"`. Labels can change after a merge or split, so the frontend uses `checkId`, never the label, to identify a check.
 - Every check lists all courses in course order, even empty ones, as the shared Check shape requires.
-- Items without a default course (drinks) still sit in a course; the order endpoints decide which one when the item is added.
+- Items without a default course (drinks) are placed in course 1 when added (see `POST /checks/{checkId}/items`).
 
 ---
 
 ### POST /checks/{checkId}/items/move-course
 
-**Owner:** Tolu · **Called by:** Tables · **Status:** Draft
+**Owner:** Tolu · **Called by:** Tables · **Status:** Agreed
 
 Moves several selected items on one check to another course in one action (coworker issue 1).
 
@@ -448,6 +730,7 @@ ChangeResult.
 | 400 | `VALIDATION_FAILED` | `orderItemIds` is empty, `targetCourseId` doesn't exist, or every selected item is already in the target course |
 | 404 | `CHECK_NOT_FOUND` | `checkId` doesn't exist |
 | 404 | `ITEM_NOT_FOUND` | An ID in `orderItemIds` doesn't exist or isn't on this check |
+| 409 | `CHECK_HAS_PAYMENT` | The check has a payment |
 | 409 | `CHECK_ALREADY_PAID` | The check is paid |
 | 409 | `CHECK_CLOSED` | The check is closed |
 
@@ -464,9 +747,9 @@ ChangeResult.
 
 ### POST /items/move-table
 
-**Owner:** Tolu · **Called by:** Tables · **Status:** Draft
+**Owner:** Tolu · **Called by:** Tables · **Status:** Agreed
 
-Moves selected items to another table, following the auto-merge rules (coworker issue 2). This is the reference example above, completed.
+Moves selected items to another table, following the auto-merge rules (coworker issue 2).
 
 **Path / query parameters**
 
@@ -536,6 +819,7 @@ Table 5 has two checks, so nothing moved yet:
 | 400 | `VALIDATION_FAILED` | `orderItemIds` is empty, the items are on more than one check, the target is the items' current table, or `targetCheckId` isn't an open check on the target table |
 | 404 | `TABLE_NOT_FOUND` | `targetTableId` doesn't exist |
 | 404 | `ITEM_NOT_FOUND` | Any ID in `orderItemIds` doesn't exist |
+| 409 | `CHECK_HAS_PAYMENT` | The source check has a payment |
 | 409 | `CHECK_ALREADY_PAID` | The source check is paid |
 | 409 | `CHECK_CLOSED` | The source check is closed |
 
@@ -547,14 +831,15 @@ Table 5 has two checks, so nothing moved yet:
 - A source check left with no items is set to `CLOSED`, not deleted, because ITEM_TRANSFER rows still point to it. Its ID is returned in `removedCheckIds`.
 - Each moved item gets one ITEM_TRANSFER row (source check to target check, same course).
 - `CHOOSE_CHECK` changes nothing, so its `undo` is the current state, unchanged.
-- The whole move is one Undo entry. Undo moves the items back to their original check, course and positions, and reopens a source check that was closed.
+- The target check may have a payment; merging into it only raises its balance. Undo of that merge is then blocked by the part-paid rule.
+- The whole move is one Undo entry. Undo moves the items back to their original check, course and positions, restores each item's previous `movedFrom` tag, and reopens a source check that was closed.
 - Items are removed from each source course List from the highest position down, so positions don't shift.
 
 ---
 
 ### POST /checks/{checkId}/split
 
-**Owner:** Tolu · **Called by:** Tables · **Status:** Draft
+**Owner:** Tolu · **Called by:** Tables · **Status:** Agreed
 
 Moves selected items into a new check on the same table, for guests who pay separately.
 
@@ -595,6 +880,7 @@ ChangeResult with both checks: the original first, then the new one.
 | 400 | `VALIDATION_FAILED` | `orderItemIds` is empty, or it contains every item on the check (nothing would be left) |
 | 404 | `CHECK_NOT_FOUND` | `checkId` doesn't exist |
 | 404 | `ITEM_NOT_FOUND` | An ID in `orderItemIds` doesn't exist or isn't on this check |
+| 409 | `CHECK_HAS_PAYMENT` | The check has a payment |
 | 409 | `CHECK_ALREADY_PAID` | The check is paid |
 | 409 | `CHECK_CLOSED` | The check is closed |
 
@@ -604,13 +890,13 @@ ChangeResult with both checks: the original first, then the new one.
 - Items keep their course and their relative order.
 - `movedFrom` becomes `"Split from Check 1"`, using the original check's label.
 - Each moved item gets one ITEM_TRANSFER row.
-- The whole split is one Undo entry. Undo moves the items back to their original positions and closes the new check.
+- The whole split is one Undo entry. Undo moves the items back to their original positions, restores their previous `movedFrom` tags, and closes the new check.
 
 ---
 
 ### POST /checks/{checkId}/payments
 
-**Owner:** Tolu · **Called by:** Tables · **Status:** Draft
+**Owner:** Tolu · **Called by:** Tables · **Status:** Agreed
 
 Records a payment on a check, and marks the check paid once its total is covered.
 
@@ -686,12 +972,349 @@ ChangeResult plus `payment` and `warning`.
 
 - The payment is recorded in the current shift, so the shift report counts it there.
 - When payments cover the total, the check becomes `PAID`, `closedAt` is set, and it moves from the table's List of checks to the shift's paid List. The Tables screen drops it from the table; Close Shift counts it.
+- After the first payment, the check is locked against actions that take items off it (`CHECK_HAS_PAYMENT`); see "Part-paid checks" in section 1. More items can still be added, and the balance grows.
+- `payment.remainingCents` equals the check's new `balanceCents`. The pay panel caps the amount field at `balanceCents`, so the `amountCents` validation error should never be seen.
 - The open-checks warning is found by iterating the table's remaining checks with the custom iterator.
-- Payments are not undoable, so `undo` is returned unchanged.
+- Payments are not undoable, so `undo` is returned unchanged. Reversing a payment would be a refund, which is out of scope (see 5.4).
 
 ---
 
-<!-- End of floor endpoints. -->
+<!-- Undo and shift endpoints (Vigneshwar). Drafted by Carolina; Vigneshwar to review. -->
+
+### GET /undo
+
+**Owner:** Vigneshwar · **Called by:** All (top bar) · **Status:** Draft (Vigneshwar to review)
+
+Returns the current state of the Undo button.
+
+**Path / query parameters**
+
+None
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+UndoState.
+
+```json
+{ "canUndo": true, "label": "Merged 2 items", "blocked": false, "blockedReason": null }
+```
+
+When the top entry is blocked:
+
+```json
+{ "canUndo": false, "label": "Merged 2 items", "blocked": true, "blockedReason": "Can't undo: Table 5 has a payment" }
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 500 | | Unexpected failure only; this endpoint has no expected errors |
+
+**Rules and notes**
+
+- `label` is the label of the entry on top of the Undo stack (`peek`), or `null` when the stack is empty.
+- `blocked` is worked out on every read by checking the top entry against the rules `POST /undo` applies: any check in `touchedCheckIds` with a payment, or an action that can no longer be reversed. The frontend shows a blocked entry as a disabled button with `blockedReason`, plus a **Skip** link that calls `POST /undo/skip`.
+- The frontend calls it on page load and after any Undo error. Every other change already returns `undo` in its ChangeResult.
+
+---
+
+### POST /undo
+
+**Owner:** Vigneshwar · **Called by:** All (top bar) · **Status:** Draft (Vigneshwar to review)
+
+Reverses the most recent undoable action.
+
+**Path / query parameters**
+
+None
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+ChangeResult with every check the undo touched.
+
+```json
+{
+  "checks": [
+    { "checkId": 3, "tableNumber": 2, "status": "OPEN", "...": "Check shape, items back in place" },
+    { "checkId": 7, "tableNumber": 4, "...": "Check shape without the moved items" }
+  ],
+  "removedCheckIds": [],
+  "undo": { "canUndo": true, "label": "Moved 2 items to Apps" },
+  "message": "Undid: Merged 2 items"
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 409 | `NOTHING_TO_UNDO` | The Undo stack is empty |
+| 409 | `CHECK_HAS_PAYMENT` | The action touched a check that has had a payment since (fully or partly paid). The entry is discarded, so the next Undo moves on to the action before it |
+| 409 | `UNDO_NOT_POSSIBLE` | The action can no longer be reversed (for example, undoing "Opened Check 2" after items were added). The entry is discarded |
+
+**Rules and notes**
+
+- Pops the top entry from the Undo stack and hands it to the service that owns that action type (section 5.2).
+- A check closed by the undo (for example, the new check from an undone split) is returned in `removedCheckIds`. A check reopened by the undo appears in `checks` with status `OPEN`.
+- Undoing a move writes reversing ITEM_TRANSFER rows, so the move history stays complete.
+- The frontend doesn't call this endpoint while `undo.blocked` is `true`, so the two 409 errors above should only happen in a race. After any error, the frontend calls `GET /undo` to refresh the button.
+- The Undo stack is cleared when the shift closes.
+
+---
+
+### POST /undo/skip
+
+**Owner:** Vigneshwar · **Called by:** All (top bar) · **Status:** Draft (Vigneshwar to review)
+
+Discards a blocked entry from the top of the Undo stack without changing anything, so the entry below it becomes available.
+
+**Path / query parameters**
+
+None
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+UndoState for the new top entry.
+
+```json
+{ "canUndo": true, "label": "Moved 2 items to Apps", "blocked": false, "blockedReason": null }
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 409 | `NOTHING_TO_UNDO` | The Undo stack is empty |
+| 409 | `UNDO_NOT_POSSIBLE` | The top entry isn't blocked; use `POST /undo` instead |
+
+**Rules and notes**
+
+- Only blocked entries can be skipped, so Skip can't be used to throw away an action that could still be undone.
+- Pops one entry. If the next one is also blocked, the response says so and the frontend shows Skip again.
+
+---
+
+### GET /shifts/current/summary
+
+**Owner:** Vigneshwar · **Called by:** Close Shift · **Status:** Draft (Vigneshwar to review)
+
+Returns the open shift's paid totals and its open checks, for the summary cards.
+
+**Path / query parameters**
+
+None
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+ShiftSummary.
+
+```json
+{
+  "shiftId": 1,
+  "shiftName": "Brunch",
+  "status": "OPEN",
+  "paidCheckCount": 2,
+  "paidTotalCents": 6100,
+  "openChecks": [
+    { "checkId": 3, "tableNumber": 2, "checkLabel": "Check 1", "totalCents": 5000, "...": "Check shape" },
+    { "checkId": 10, "tableNumber": 5, "checkLabel": "Check 1", "totalCents": 3000, "...": "Check shape" }
+  ]
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 500 | | Unexpected failure only; there is always an open shift |
+
+**Rules and notes**
+
+- `paidCheckCount` and `paidTotalCents` come from iterating the shift's paid List. `paidTotalCents` excludes tips.
+- `openChecks` lists every open check, table by table in table-number order, then by label, by iterating the tables List and each table's checks.
+
+---
+
+### POST /shifts/current/close
+
+**Owner:** Vigneshwar · **Called by:** Close Shift · **Status:** Draft (Vigneshwar to review)
+
+Closes the open shift, carrying any open checks over to a new shift (coworker issue 3).
+
+**Path / query parameters**
+
+None
+
+**Request body**
+
+```json
+{
+  "carryOver": true,
+  "employeeId": 1,
+  "nextShiftName": "Dinner"
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `carryOver` | Must be `true` if the shift has open checks. The frontend first sends `false`; a `409 OPEN_CHECKS_REMAIN` tells it to show the carry-over prompt |
+| `employeeId` | The employee shown in the top bar. Recorded as the shift's closer and on each carry-over row |
+| `nextShiftName` | Name of the shift that opens next |
+
+**Success response** – `200 OK`
+
+ChangeResult plus the closed and new shift IDs.
+
+```json
+{
+  "closedShiftId": 1,
+  "nextShiftId": 2,
+  "carriedOverCheckIds": [3, 10, 11],
+  "checks": [ { "checkId": 3, "tableNumber": 2, "status": "OPEN", "...": "Check shape" } ],
+  "removedCheckIds": [],
+  "undo": { "canUndo": false, "label": null },
+  "message": "Brunch closed. 3 open checks carried over to Dinner."
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | `nextShiftName` is empty |
+| 404 | `EMPLOYEE_NOT_FOUND` | `employeeId` doesn't exist |
+| 409 | `OPEN_CHECKS_REMAIN` | The shift has open checks and `carryOver` is `false`. Nothing changes |
+| 409 | `SHIFT_ALREADY_CLOSED` | The shift was already closed, for example by a second click |
+
+**Rules and notes**
+
+- Writes one SHIFT_CARRYOVER row per open check, with `confirmedByEmployeeId`. Open checks stay on their tables, unchanged.
+- Sets the shift's `closedAt` and `closedByEmployeeId`, then opens the next shift.
+- The report for the closed shift counts only checks paid during it (`GET /shifts/{closedShiftId}/report`).
+- Not undoable. The Undo stack is cleared, so the new shift starts clean.
+
+---
+
+### GET /shifts/{shiftId}/report
+
+**Owner:** Vigneshwar · **Called by:** Close Shift · **Status:** Draft (Vigneshwar to review)
+
+Returns the shift's sales report: items sorted by quantity or revenue, and totals per menu category.
+
+**Path / query parameters**
+
+| Name | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `shiftId` | int | Yes | Usually `closedShiftId` from the close response |
+| `sortBy` | string | No | `quantity` (default) or `revenue` |
+| `algorithm` | string | No | `merge` (default) or `insertion` |
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+```json
+{
+  "shiftId": 1,
+  "shiftName": "Brunch",
+  "status": "CLOSED",
+  "sortBy": "quantity",
+  "algorithm": "merge",
+  "paidCheckCount": 2,
+  "paidTotalCents": 6100,
+  "rows": [
+    { "rank": 1, "menuItemId": 50, "name": "Soda", "quantity": 2, "revenueCents": 600 },
+    { "rank": 2, "menuItemId": 32, "name": "Salmon", "quantity": 1, "revenueCents": 1900 },
+    { "rank": 3, "menuItemId": 40, "name": "Classic Burger", "quantity": 1, "revenueCents": 1400 }
+  ],
+  "categoryTotals": [
+    { "entryId": 10, "name": "Starters", "revenueCents": 900 },
+    { "entryId": 11, "name": "Burgers", "revenueCents": 1400 },
+    { "entryId": 12, "name": "Mains", "revenueCents": 1900 }
+  ]
+}
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | `sortBy` or `algorithm` isn't one of the allowed values |
+| 404 | `SHIFT_NOT_FOUND` | `shiftId` doesn't exist |
+
+**Rules and notes**
+
+- Built in Java, never in SQL: iterate the shift's paid checks and their items, and add each item's `quantity` and `lineTotalCents` (add-ons included) to its row in a List of report rows.
+- Rows are sorted with the team's own sorting algorithm, descending by `sortBy`; ties go to the other measure, then to name A–Z. `rank` is assigned after sorting.
+- `categoryTotals` comes from `MenuTreeInterface.categoryTotals`: one entry for every category that directly holds items, in menu display order, with zero-revenue categories left out.
+- Works for open and closed shifts. For an open shift it shows what's been paid so far.
+
+---
+
+### GET /shifts/{shiftId}/sort-timing
+
+**Owner:** Vigneshwar · **Called by:** Close Shift · **Status:** Draft (Vigneshwar to review)
+
+Times both sorting algorithms on report rows of several sizes, for the efficiency comparison.
+
+**Path / query parameters**
+
+| Name | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `shiftId` | int | Yes | The shift's real report rows are the first data set |
+| `sizes` | int list | No | Extra generated sizes, comma-separated. Default `100,1000,10000`. Each at most `20000` |
+
+**Request body**
+
+None
+
+**Success response** – `200 OK`
+
+An array of SortTiming: both algorithms for each data set, smallest first. (The numbers below are placeholders, not results.)
+
+```json
+[
+  { "algorithm": "insertion", "itemCount": 12, "elapsedMicros": 0 },
+  { "algorithm": "merge", "itemCount": 12, "elapsedMicros": 0 },
+  { "algorithm": "insertion", "itemCount": 100, "elapsedMicros": 0 },
+  { "algorithm": "merge", "itemCount": 100, "elapsedMicros": 0 }
+]
+```
+
+**Errors**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED` | A size is less than 1 or more than 20000 |
+| 404 | `SHIFT_NOT_FOUND` | `shiftId` doesn't exist |
+
+**Rules and notes**
+
+- Generated rows use random quantities and revenue from a fixed seed, so every run times the same data.
+- Both algorithms sort copies of the same list, by `quantity`.
+- Each measurement runs once to warm up (discarded), then 5 times; `elapsedMicros` is the median.
+- Runs on the request thread. Large sizes take a few seconds, so the frontend shows a loading state.
+
+---
 
 ## 5. Java interface contracts
 
@@ -699,11 +1322,13 @@ These are the Java types everyone codes against. Like the endpoints, each one mo
 
 ### 5.1 ListInterface
 
-**Owner:** Tolu · **Used by:** everyone · **Status:** Draft
+**Owner:** Tolu · **Used by:** everyone · **Status:** Agreed (array-based)
 
-Package `com.bizkit.adt.list`. One generic list for checks on a table, courses on a check, items in a course, tables, the shift's paid checks and report rows.
+Package `com.bizkit.adt.list`. One generic list for checks on a table, courses on a check, items in a course, tables, the shift's paid checks, report rows and a menu node's children.
 
 ```java
+import java.util.Iterator;
+
 public interface ListInterface<T> extends Iterable<T> {
     void add(T entry);                 // add at the end
     void add(int position, T entry);   // insert at position; later entries shift up by one
@@ -733,38 +1358,142 @@ public interface ListInterface<T> extends Iterable<T> {
 
 Example: a course holds `[Caesar, parm, carbonara, tiramisu]` and the parm and carbonara are selected. Recorded positions are 1 and 2. Remove 2 (carbonara), then 1 (parm), leaving `[Caesar, tiramisu]`. Undo inserts parm at 1, then carbonara at 2, giving back `[Caesar, parm, carbonara, tiramisu]`.
 
-**Implementation choice: array-based or linked?** To agree at the meeting.
+**Implementation: array-based (decided).** `get` and `set` are O(1), which the shift report's sorts need, and the timing comparison then measures the sorting algorithms rather than the list. Our lists are short, so shifting entries on insert and remove costs nothing noticeable. Vigneshwar to confirm, since his sorting code depends on it.
 
-| | Array-based (resizable array) | Linked (chain of nodes) |
+| | Array-based (chosen) | Linked |
 | --- | --- | --- |
 | `get` / `set` | O(1) | O(n), walks from the start |
 | `add` / `remove` in the middle | O(n), shifts later entries | O(n) to reach the spot, then O(1) to relink |
 | `add` at the end | O(1) usually, O(n) when the array grows | O(1) with a tail pointer |
-| Sorting through `get` / `set` | Textbook speed, so the timing comparison is fair | Much slower (insertion sort about O(n³)), so the timing measures the list, not the sort |
+| Sorting through `get` / `set` | Textbook speed | Much slower (insertion sort about O(n³)) |
 
-Proposal: **array-based.** Our lists are short, so shifting costs nothing noticeable, and the shift report's sorts and their timing comparison need fast `get` and `set`. Vigneshwar's sorting code depends on this choice, so he should agree to it.
+### 5.2 Undo entries
 
-### 5.2 Undo entries from the floor service
+**Owner:** Vigneshwar (format, drafted by Carolina) · **Input from:** Carolina, Tolu · **Status:** Draft (Vigneshwar to review)
 
-**Owner:** Vigneshwar (format) · **Input from:** Tolu · **Status:** Draft
+Package `com.bizkit.undo`. Each undoable action pushes **one** `UndoAction`, however many items it changed. The Undo stack is a `LinkedStack<UndoAction>`.
 
-Vigneshwar defines the Undo entry format. This is what the floor service needs each entry to hold so that a move, merge or split can be reversed exactly:
+```java
+public enum UndoType { OPEN_CHECK, ADD_ITEM, REMOVE_ITEM, MOVE_COURSE, MOVE_TABLE, SPLIT }
 
-| Action | What the entry must record |
+public class ItemMove {
+    int orderItemId;
+    int fromCheckId;      // where the item was before the action
+    int fromCourseId;
+    int fromPosition;     // 0-based position in that course
+    int toCheckId;        // where it went (same as fromCheckId for a course move)
+    int toCourseId;
+    String previousMovedFrom;  // the item's movedFrom tag before this action, or null; restored on undo
+}
+
+public class UndoAction {
+    UndoType type;
+    String label;           // the Snackbar text: "Merged 2 items"
+    ItemMove[] moves;       // one per item changed; empty for OPEN_CHECK
+    int createdCheckId;     // check this action created, or -1 (OPEN_CHECK, NEW_CHECK move, SPLIT)
+    int closedCheckId;      // check this action closed, or -1 (source check emptied by a move)
+    int[] touchedCheckIds;  // every check involved, for the paid-check rule
+    OrderItem removedItem;  // REMOVE_ITEM only: full copy of the item, to put it back
+}
+```
+
+Arrays, not `java.util` collections.
+
+| Type | Pushed by | What Undo does |
+| --- | --- | --- |
+| `OPEN_CHECK` | Order service | Closes `createdCheckId` if it's still empty |
+| `ADD_ITEM` | Order service | Removes the item from the position it was added at |
+| `REMOVE_ITEM` | Order service | Re-inserts `removedItem` at `fromPosition` in `fromCourseId` |
+| `MOVE_COURSE` | Floor service | Removes each item from its target course (highest position first), then re-inserts at `fromPosition` (ascending) |
+| `MOVE_TABLE` | Floor service | Same as above across checks; reopens `closedCheckId`; closes `createdCheckId` |
+| `SPLIT` | Floor service | Moves items back to `fromCheckId`; closes `createdCheckId` |
+
+For `ADD_ITEM`, `fromCheckId`, `fromCourseId` and `fromPosition` hold where the item was **added**, and `toCheckId`/`toCourseId` are `-1`.
+
+```java
+public interface UndoManagerInterface {
+    void push(UndoAction action);
+    boolean canUndo();
+    String peekLabel();       // null when empty
+    UndoAction pop();         // throws IllegalStateException when empty
+    void clear();             // called when the shift closes
+}
+
+public interface Undoable {   // implemented by OrderService and FloorService
+    ChangeResult revert(UndoAction action);
+}
+```
+
+**Flow for `POST /undo`.** The undo controller pops the top entry. If any check in `touchedCheckIds` now has a payment (fully or partly paid), the entry is discarded and the request fails with `CHECK_HAS_PAYMENT`. Otherwise the entry goes to the service that owns its type (order service for the first three types, floor service for the rest), whose `revert` makes the change, saves it and returns the ChangeResult. Each owner writes the undo logic for their own actions; Vigneshwar owns the stack, the dispatch and the paid-check rule.
+
+### 5.3 MenuTree methods
+
+**Owner:** Carolina · **Used by:** Carolina (menu, order), Vigneshwar (shift report) · **Status:** Agreed by Carolina and Tolu; Vigneshwar to confirm `categoryTotals`
+
+Package `com.bizkit.adt.tree`. A general tree of menu entries: categories hold categories or items, items hold add-ons. Each node keeps its children in a `ListInterface<MenuNode>`, so the tree reuses the team's List ADT.
+
+```java
+public enum EntryType { CATEGORY, ITEM, ADD_ON }
+
+public class MenuNode {
+    int entryId;
+    String name;
+    EntryType type;
+    int priceCents;           // 0 for categories
+    int defaultCourseId;      // -1 if none (categories, add-ons, drinks)
+    boolean available;
+    int displayOrder;
+    ListInterface<MenuNode> children;   // in displayOrder
+}
+
+public interface MenuTreeInterface {
+    MenuNode getRoot();
+    void addChild(int parentEntryId, MenuNode child);   // used while loading; children kept in displayOrder
+    MenuNode findById(int entryId);                     // recursive; null if missing
+    MenuNode findByName(String name);                   // recursive, case-insensitive; first match in display order
+    int priceWithAddOns(int itemEntryId, int[] addOnIds);
+    int countItems();                                   // recursive
+    ListInterface<CategoryTotal> categoryTotals(ListInterface<ReportRow> rows);
+}
+```
+
+| Method | Rule |
 | --- | --- |
-| Course move | For each moved item: `orderItemId`, `checkId`, original `courseId` and original position |
-| Move to table (MERGED or NEW_CHECK) | For each moved item: `orderItemId`, source `checkId`, `courseId` and original position, plus target `checkId`. Also: the new check's ID if one was created, and the source check's ID if it was closed |
-| Split | For each moved item: `orderItemId`, original `checkId`, `courseId` and original position, plus the new check's ID |
+| `addChild` | Throws `IllegalArgumentException` if the parent doesn't exist or the child's type can't go under it (an add-on under a category, an item under an add-on) |
+| `findById`, `findByName` | Return `null` when nothing matches. Services turn `null` into `MENU_ENTRY_NOT_FOUND` |
+| `priceWithAddOns` | Price of the item plus each chosen add-on, recursively, so an add-on's own add-ons would also count. Throws `IllegalArgumentException` if the entry isn't an item or an add-on isn't its child |
+| `countItems` | Number of `ITEM` nodes in the whole tree |
+| `categoryTotals` | Recursive: a category's total is the revenue of the items directly under it plus the totals of its sub-categories. Returns one `CategoryTotal` for every category that directly holds items, in display order, leaving out zero totals. Revenue for an item is found in `rows` by `menuItemId`; items not in `rows` count 0 |
 
-Each action pushes **one** entry, however many items it moved. The label is the Snackbar text: `"Moved 2 items to Apps"`, `"Merged 2 items"`, `"Split 1 item"`.
+`categoryTotals` searches `rows` once per item, so it is O(items × rows). Both are small for one shift, and this keeps the method on our own List instead of a hash map.
 
-### 5.3 MenuTree methods for the shift report
+### 5.4 Decisions from the contracts meeting
 
-**Owner:** Carolina · **Status:** To be added
+| # | Question | Decision | Status |
+| --- | --- | --- | --- |
+| 1 | `java.util.Iterator` | `adt/list/` imports `java.util.Iterator` so the enhanced `for` loop works. It's an interface, not a collection; the list and iterator class are our own. | Agreed; Tolu confirming with the TA |
+| 2 | Who made the change? | Actions on a check use the check's server. Opening a check and closing the shift send the `employeeId` shown in the top bar. | Agreed |
+| 3 | Undo after a payment | Undo never changes a check that has a payment. If the top entry touches a check that is now fully or partly paid, Undo discards it and returns `CHECK_HAS_PAYMENT`, so the stack doesn't get stuck. | Agreed by Carolina and Tolu; Vigneshwar to confirm |
+| 3a | Part-paid checks (Tolu) | With split tender, a check can be `OPEN` with a payment. Once it has any payment, moving items off it, splitting, removing items and Undo are blocked with `CHECK_HAS_PAYMENT`, so it can't end up overpaid. Adding, sending and merging in are allowed. | Agreed by Carolina and Tolu |
+| 3b | Undo error code (Tolu) | "Can no longer be reversed" is a state conflict, not bad input, so it uses `UNDO_NOT_POSSIBLE` (409) instead of `VALIDATION_FAILED` (400). | Agreed by Carolina and Tolu; Vigneshwar to confirm |
+| 3c | Restoring move tags (Tolu) | `ItemMove.previousMovedFrom` keeps an item's earlier tag, so undoing a second move brings back "Merged from Table 2" instead of clearing it. | Agreed by Carolina and Tolu; Vigneshwar to confirm |
+| 4 | Refunds and voids | Not in this iteration; the UI says so wherever it matters (section 6). A refund is not an undo: it moves money back and needs its own record. Out of scope for this project; listed as future work. Design if added later: a refund is a PAYMENT row with `transactionKind` = refund and `refundOfPaymentId` pointing to the original charge, plus a REFUND subtype for the reason and the approving MANAGER. | Agreed |
+| 3d | Blocked Undo display | `GET /undo` reports `blocked` and `blockedReason`. The button is disabled with the reason, and a Skip link (`POST /undo/skip`) discards only a blocked entry. | Agreed by Carolina; Tolu and Vigneshwar to confirm |
+| 5 | List responses | `GET` endpoints that return a list return a plain JSON array. | Agreed |
+| 6 | List implementation | Array-based (see 5.1). | Agreed; Vigneshwar to confirm |
 
-### 5.4 Open questions for the contracts meeting
+---
 
-1. **`java.util.Iterator` (FYI).** The enhanced `for` loop only works if `iterator()` returns a `java.util.Iterator`, so `adt/list/` imports that one interface. It's an interface, not a collection; the list and the iterator class are our own code. A home-made iterator interface would rule out the enhanced `for` loop everywhere, so we're keeping this import and will mention it to the TA.
-2. **Who made the change?** ITEM_TRANSFER and PAYMENT need an employee ID, but the app has no login. Proposal: the backend uses the check's server for moves, splits and payments.
-3. **Undo after a payment.** If a check is paid and the next Undo would change it (for example, undoing the merge that filled it), the Undo manager should refuse with `CHECK_ALREADY_PAID` instead of changing a paid check.
-4. **List responses.** `GET` endpoints that return a list (`/tables`, `/tables/{tableId}/checks`) return a plain JSON array, not an object around it. Confirm everyone uses the same style.
+## 6. Display rules for blocked actions
+
+Refunds and voids are not part of this iteration. Rather than letting an action fail, every screen disables it and says why, using the same wording. These rules follow the common POS default: adding to a part-paid check is allowed, taking items off is blocked.
+
+| Situation | Detected by | Disabled | Still allowed | Text shown next to the control |
+| --- | --- | --- | --- | --- |
+| Check partly paid | `paidCents` > 0 and `status` = `OPEN` | Remove, Move to course, Move to table, Split | Add items, Send, Pay, merging items in | "This check has a payment, so items can't be taken off it. That needs a manager refund, which isn't part of this version." |
+| Check fully paid | `status` = `PAID` | Everything | Nothing (it leaves the table) | Snackbar on payment: "Check 1 paid · moved to today's paid checks" |
+| Item sent to the kitchen | item `status` = `SENT` | Remove for that item | Moves and splits (the kitchen ticket stays valid) | "Sent to kitchen. Removing it needs a void, which isn't part of this version." |
+| Undo blocked | `undo.blocked` = `true` | Undo button | Skip link | The button shows `blockedReason`, e.g. "Can't undo: Table 5 has a payment" |
+| Payment amount | `balanceCents` | Amounts above the balance | Any amount up to the balance | Amount field shows "Up to $30.00 due" |
+
+The check panel always shows its money state in the header: **"Total $50.00 · Paid $20.00 · Due $30.00"**, with a **Partly paid** badge while `paidCents` > 0.

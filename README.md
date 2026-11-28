@@ -18,6 +18,7 @@ Built for **INFO 6205 Program Structure and Algorithms** (Fall 2026, Northeaster
 - [Demo walkthrough](#demo-walkthrough)
 - [Team](#team)
 - [Database workflow](#database-workflow)
+- [Known limits (by design)](#known-limits-by-design)
 - [Contributing](#contributing)
 - [Documentation](#documentation)
 
@@ -46,7 +47,8 @@ Bizkit is based on feedback from restaurant staff who use Toast every shift:
 - Move items to another table with automatic merging
 - Split a guest's items into a new check
 - Warning when paying a check while the table still has other open checks
-- Undo for moves, merges and splits
+- Split tender: once a check has a payment, actions that take items off it are disabled with the reason shown, while adding items and paying stay available (the common POS default)
+- Undo for moves, merges and splits; when the last action can't be undone, the button says why and offers Skip
 
 **Scenario 3 – Close the shift**
 - See paid checks and open tabs side by side
@@ -298,7 +300,7 @@ See `RUN_INSTRUCTIONS.txt` for troubleshooting.
 The seed data sets up each scenario so it can be demonstrated right away.
 
 1. **Take an order** – Open the Take Order tab, pick a table, open Burgers, choose Classic Burger, add Cheese and Bacon and watch the price update. Remove an item, then press Undo.
-2. **Fix it on the floor** – On the Tables tab, select the chicken parm and carbonara and move them to course 1. Move items to a table with one check and watch them merge. Move items to Table 5, which has two checks, and choose where they go.
+2. **Fix it on the floor** – On the Tables tab, select the chicken parm and carbonara and move them to course 1. Move items to a table with one check and watch them merge. Move items to Table 5, which has two checks, and choose where they go. Then take a **partial** payment on a check: it shows *Partly paid* and the balance due, and moving, splitting and removing are disabled with the reason, while adding items still works. Pay the rest and the check moves to the shift's paid checks.
 3. **Close the shift** – On the Close Shift tab, press Close shift, accept the carry-over prompt, then sort the report by quantity or revenue.
 
 ## Team
@@ -348,6 +350,13 @@ Then run both files in `dist/` against your local server and run the queries in 
 - Feature pull requests change `src/` and `scripts/` only. **Never edit `dist/` by hand.** After merging to `main`, rebuild `dist/` and commit it on its own ("Rebuild dist").
 - Report sorting and category totals stay in the Java ADTs. Don't move them into views or stored procedures.
 - **SQL Server specifics:** the build script puts `GO` between files, because `CREATE TRIGGER` and `CREATE VIEW` must each start their own batch. Before `DROP DATABASE`, the pre-deployment script sets the database to single-user mode so open connections (such as a running backend) don't block the drop.
+
+## Known limits (by design)
+
+These are intentional for this version, and the app says so on screen wherever they apply:
+
+- **Refunds and voids aren't included.** A check with a payment can't have items taken off, and items already sent to the kitchen can't be removed. Both would need a manager refund or void, which is planned as future work.
+- **Undo never changes a check that has a payment.** The Undo button shows when its last action is blocked and offers Skip.
 
 ## Contributing
 
