@@ -160,10 +160,19 @@ Scenario 2 - Fix it on the floor (Tables tab)
   Select the chicken parm and carbonara and move them to course 1.
   Move items to a table with one check: they merge automatically.
   Move items to Table 5 (two checks) and choose which check.
+  Take a partial payment on a check: it shows "Partly paid" and the
+  balance due. Moving, splitting and removing are disabled with the
+  reason shown; adding items still works. Pay the rest and the check
+  moves to the shift's paid checks.
 
 Scenario 3 - Close the shift (Close Shift tab)
   Press Close shift, accept the prompt to carry open tabs over,
   then sort the report by quantity or revenue.
+
+Known limits (by design): refunds and voids are not part of this
+version, so items can't be taken off a check that has a payment, and
+items already sent to the kitchen can't be removed. The app shows the
+reason wherever this applies.
 
 To reset all demo data, run both SQL scripts again (step 2) and
 restart the backend.
